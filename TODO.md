@@ -1,0 +1,1 @@
+Salvar tokens em cache, salvar fragmentos das funções em set, verificar a possibilidade de trocar de modelo, adicionar os parametros das funções
