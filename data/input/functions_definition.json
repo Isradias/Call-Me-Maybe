@@ -15,6 +15,21 @@
     }
   },
   {
+    "name": "fn_add_numbers_squares",
+    "description": "Square sum numbers, not equal add_numbers",
+    "parameters": {
+      "a": {
+        "type": "number"
+      },
+      "b": {
+        "type": "number"
+      }
+    },
+    "returns": {
+      "type": "number"
+    }
+  },
+  {
     "name": "fn_greet",
     "description": "Generate a greeting message for a person by name.",
     "parameters": {
