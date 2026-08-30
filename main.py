@@ -16,42 +16,76 @@ class Function_Calling(BaseModel):
     _function_prefixes: set[str] = PrivateAttr(default_factory=set)
 
     def model_post_init(self, __context) -> None:
-        self._function_names = self.get_functions_name()
-        self._function_prefixes = self.get_prefixes()
+        self.load_functions()
 
-    def get_functions_name(self) -> set:
-        #TODO: Colocar um try aqui caso não abra
+    def load_functions(self) -> None:
+        #TODO: Colocar um try aqui
         with open(self.path_fn_definition, "r", encoding="utf-8") as f:
-            function_names = [x["name"] for x in json.load(f)]
-        return set(function_names)
+            self._functions_definition = json.load(f)
 
-    def get_functions_definition(self) -> str:
-        with open(self.path_fn_definition, "r", encoding="utf-8") as f:
-            functions_definition = f.read()
-        return functions_definition
+        self._function_names = {
+            function["name"]
+            for function in self._functions_definition
+        }
 
-    def get_sys_prompt(self, user_prompt: str) -> str:
-        sys_prompt = f"""
-        You are a function-calling system.
+        self._function_prefixes = {
+            name[:i]
+            for name in self._function_names
+            for i in range(1, len(name) + 1)
+        }
 
-        Available functions:
-        {self.get_functions_definition()}
+    def get_sys_prompt(self, prompt: str, name: str | None = None) -> str:
+        if not name:
+            sys_prompt = (f"""
+            You are a function-calling system.
 
-        User request:
-        {user_prompt}
+            Available functions:
+            {self._functions_definition}
 
-        Select the single function that best matches the user request.
+            User request:
+            {prompt}
 
-        Use each function's description to determine which function is
-        appropriate.
+            Select exactly one function whose described behavior best matches
+            the user's request.
 
-        Return only the exact function name.
-        Do not include explanations, comments, markdown, arguments, or any
-        other text.
+            Prefer the simplest function that fully satisfies the request.
+            Do not choose a more specific function unless the user explicitly
+            requests the additional behavior described by that function.
 
-        Function name:
-        "
-        """
+            Use each function's description to determine the correct function.
+
+            Return only the exact function name.
+            Do not include explanations, comments, markdown, arguments, or any
+            other text.
+
+            Function name:
+            "
+            """).strip()
+        else:
+            function_definition = next(
+                x for x in self._functions_definition
+                if x["name"] == name
+            )
+
+            sys_prompt = f"""
+            You are extracting arguments for a function call.
+
+            Selected function:
+            {function_definition}
+
+            User request:
+            {prompt}
+
+            Extract exactly the parameters required by the selected function
+            from the user request.
+
+            Use the parameter names and types defined by the function.
+            Do not invent additional parameters.
+            Do not include explanations, comments, markdown, or any other text.
+
+            Parameters:
+            {{
+            """.strip()
         return sys_prompt
 
     def get_prefixes(self) -> None:
@@ -64,7 +98,9 @@ class Function_Calling(BaseModel):
         return self._function_prefixes
 
     def get_output_name(self, user_prompt: str) -> str:
-        def is_prefix(candidate: str) -> bool:
+        def is_valid_candidate(candidate: str, name: str) -> bool:
+            if candidate == name:
+                return False
             if "\"" in candidate:
                 candidate = candidate.split("\"", 1)[0]
                 if candidate not in self._function_names:
@@ -72,6 +108,14 @@ class Function_Calling(BaseModel):
             if candidate not in self._function_prefixes:
                 return False
             return True
+
+        def is_unique_function(name: str):
+            functions = [function_name.startswith(name)
+                         for function_name in self._function_names]
+            nb_functions = sum(functions)
+            if nb_functions == 1 and name in self._function_names:
+                return True
+            return False
 
         ids: list[int] = self._llm.encode(
             self.get_sys_prompt(user_prompt)
@@ -82,60 +126,68 @@ class Function_Calling(BaseModel):
 
             logits: list[float] = self._llm.get_logits_from_input_ids(ids)
 
-            while True:
-                name: str
+            for token_id in range(len(logits)):
+                if token_id not in self._token_cache:
+                    decoded_token = self._llm.decode([token_id])
+                    self._token_cache[token_id] = decoded_token
 
-                for token_id in range(len(logits)):
-                    if token_id not in self._token_cache:
-                        decoded_token = self._llm.decode([token_id])
-                        self._token_cache[token_id] = decoded_token
+                candidate = name + self._token_cache[token_id]
 
-                    candidate = name + self._token_cache[token_id]
-                    if not is_prefix(candidate):
-                        logits[token_id] = float("-inf")
+                if not is_valid_candidate(candidate, name):
+                    logits[token_id] = float("-inf")
 
-                next_token_id: int = logits.index(max(logits))
+            next_token_id: int = logits.index(max(logits))
 
-                next_piece = self._token_cache[next_token_id]
+            argmax = self._token_cache[next_token_id]
 
-                if "\"" in next_piece:
-                    before_quote = next_piece.split("\"", 1)[0]
-                    candidate = name + before_quote
+            if "\"" in argmax:
+                before_quote = argmax.split("\"", 1)[0]
+                return name + before_quote
 
-                    if candidate in self._function_names:
-                        name = candidate
+            name += argmax
 
-                if name + next_piece in self._function_prefixes:
-                    name += next_piece
+            if is_unique_function(name):
+                return name
 
-                    if (
-                        name in self._function_names
-                        and sum(
-                            function_name.startswith(name)
-                            for function_name in self._function_names
-                        ) == 1
-                    ):
-                        break
+            ids.append(next_token_id)
 
-                    ids.append(next_token_id)
-                    break
+    def get_output_parameters(self, user_prompt: str, name: str):
+        def get_nb_parameters(name):
+            function_definition = next(
+                            x for x in self._functions_definition
+                            if x["name"] == name
+                        )
+            return len(function_definition["parameters"])
 
-            if name in self._function_names:
-                possible = sum(
-                    function_name.startswith(name)
-                    for function_name in self._function_names
-                )
+        def get_parameters(name) -> dict:
+            function_definition = next(
+                            x for x in self._functions_definition
+                            if x["name"] == name
+                        )
+            return function_definition["parameters"]
 
-                if possible == 1:
-                    break
-
-        return name
+        prompt = self.get_sys_prompt(user_prompt, name)
+        nb_parameters = get_nb_parameters(name)
+        
+        for parameter in get_parameters(name):
+            prompt += "\"" + parameter + "\": \""
+            prompt += "exemplo" #TODO: É aqui que entrarão as escolhas da llm
+            prompt += "\""
+            if nb_parameters > 1:
+                prompt += ", "
+                nb_parameters -= 1
+            print(prompt)
+        return 
 
     def output(self, user_prompt: str) -> str:
+        prompt = user_prompt
+        name = self.get_output_name(prompt)
+        parameters = self.get_output_parameters(prompt, name)
+
         data = {
-            "prompt": user_prompt,
-            "name": self.get_output_name(user_prompt),
-            "parameters": "ainda não",
+            "prompt": prompt,
+            "name": name,
+            "parameters": parameters,
         }
 
         return json.dumps(

@@ -16,7 +16,7 @@
   },
   {
     "name": "fn_add_numbers_squares",
-    "description": "Square sum numbers, not equal add_numbers",
+    "description": "Square the input numbers first, then add the squared values. Use this only when the user explicitly asks for squares.",
     "parameters": {
       "a": {
         "type": "number"
