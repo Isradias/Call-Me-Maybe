@@ -1,4 +1,0 @@
-- Salvar tokens em cache (Feito)
-- Salvar fragmentos das funções em set (Não funciona como esperado)
-- Verificar a possibilidade de trocar de modelo
-- Resolver o problema de estar aceitando função pelo prefixo

@@ -34,5 +34,9 @@
   },
   {
     "prompt": "What is the sum of the squares of 2 and 3?"
+  },
+  {
+    "prompt": "Qual a soma de 42 e 45?"
   }
+
 ]
