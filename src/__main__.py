@@ -1,7 +1,7 @@
 """Run the function-calling application as ``python -m src``."""
 
-from main import main
+from .cli import run
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(run())
